@@ -1,0 +1,14 @@
+Package: @PACKAGE_NAME@
+Version: @PACKAGE_VERSION@
+Section: video
+Priority: optional
+Architecture: @DEB_ARCH@
+Maintainer: Plugin CI Maintainers <ci@example.invalid>
+Installed-Size: @INSTALLED_SIZE@
+Depends: ${shlibs:Depends}, obs-studio (>= @OBS_MIN_VERSION@)
+Provides: obs-plugin
+Description: @PLUGIN_NAME@ OBS Studio plugin
+ Out-of-tree OBS Studio plugin built against libobs @OBS_MIN_VERSION@.
+ .
+ This package is produced by the reproducible CI pipeline in
+ ci/plugin-ci and contains a single obs-plugins module.

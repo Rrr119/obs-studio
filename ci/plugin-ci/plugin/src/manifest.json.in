@@ -1,0 +1,16 @@
+{
+  "id": "@PLUGIN_TARGET@",
+  "name": "@PROJECT_NAME@",
+  "display_name": "@PROJECT_NAME@",
+  "version": "@PROJECT_VERSION_FULL@",
+  "description": "Minimal OBS plugin built by the CI pipeline",
+  "long_description": "Reproducibly built out-of-tree OBS Studio plugin.",
+  "os_arch": "x86_64",
+  "has_banner": false,
+  "has_icon": false,
+  "urls": {
+    "repository": "",
+    "website": "",
+    "support": ""
+  }
+}

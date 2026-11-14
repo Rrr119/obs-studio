@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+# OBS discovers modules under /usr/lib/*/obs-plugins automatically; nothing to
+# do besides letting dpkg register the files. Kept as an extension point.
+exit 0

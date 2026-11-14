@@ -3,6 +3,8 @@
 
 # Except for default project files
 !/.github
+!/.dockerignore
+!/ci
 !/build-aux
 !/cmake
 !/deps

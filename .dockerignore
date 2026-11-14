@@ -1,0 +1,5 @@
+# Docker build context for the plugin CI image (see ci/plugin-ci/docker/Dockerfile).
+# Keep the context limited to the CI scaffold so unrelated source cannot
+# influence the build.
+**
+!ci/plugin-ci/**
