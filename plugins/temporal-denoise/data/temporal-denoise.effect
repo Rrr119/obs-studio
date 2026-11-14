@@ -1,0 +1,171 @@
+// Temporal denoise filter.
+//
+// Three techniques:
+//   SceneStat - renders a 1x1 texture holding the average absolute luma
+//               difference between the current frame and the history frame.
+//               Used on-GPU to detect scene switches (no CPU readback).
+//   Denoise   - motion-adaptive temporal blend between the current frame
+//               and the previously denoised frame (IIR). Static areas get
+//               strong averaging, moving/detailed areas keep the current
+//               frame. Filtering is done in YUV space so luma and chroma
+//               can be weighted independently.
+//   Draw      - straight copy used for the final output.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d history;
+uniform texture2d scene_stat;
+
+uniform float strength;              // max temporal blend weight (0..1)
+uniform float motion_threshold;      // luma diff where motion starts
+uniform float detail_amount;         // detail preservation (0..1)
+uniform float history_valid;         // 0 on first frame / after resize
+uniform float scene_reset_threshold; // avg luma diff treated as scene cut
+uniform float2 texel_size;           // 1/width, 1/height
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSMain(VertData vert_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float sat(float x)
+{
+	return clamp(x, 0.0, 1.0);
+}
+
+float luma(float3 rgb)
+{
+	return dot(rgb, float3(0.2126, 0.7152, 0.0722));
+}
+
+// BT.709 full-range YUV (U/V centered at 0.5)
+float3 rgb2yuv(float3 rgb)
+{
+	float y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+	float u = dot(rgb, float3(-0.1146, -0.3854, 0.5)) + 0.5;
+	float v = dot(rgb, float3(0.5, -0.4542, -0.0458)) + 0.5;
+	return float3(y, u, v);
+}
+
+float3 yuv2rgb(float3 yuv)
+{
+	float u = yuv.y - 0.5;
+	float v = yuv.z - 0.5;
+	float r = yuv.x + 1.5748 * v;
+	float g = yuv.x - 0.1873 * u - 0.4681 * v;
+	float b = yuv.x + 1.8556 * u;
+	return float3(r, g, b);
+}
+
+// Average |delta luma| over a 16x9 sample grid -> 1x1 texture.
+float4 PSSceneStat(VertData vert_in) : TARGET
+{
+	float sum = 0.0;
+	for (int y = 0; y < 9; y++) {
+		for (int x = 0; x < 16; x++) {
+			float2 uv = float2((float(x) + 0.5) / 16.0,
+					   (float(y) + 0.5) / 9.0);
+			float cur  = luma(image.Sample(def_sampler, uv).rgb);
+			float prev = luma(history.Sample(def_sampler, uv).rgb);
+			sum += abs(cur - prev);
+		}
+	}
+	float avg = sum / 144.0;
+	return float4(avg, avg, avg, 1.0);
+}
+
+float4 PSDenoise(VertData vert_in) : TARGET
+{
+	float4 cur  = image.Sample(def_sampler, vert_in.uv);
+	float4 hist = history.Sample(def_sampler, vert_in.uv);
+
+	float3 cur_yuv  = rgb2yuv(cur.rgb);
+	float3 hist_yuv = rgb2yuv(hist.rgb);
+
+	// Noise-robust motion estimation: compare 3x3-averaged luma so that
+	// pixel noise is not mistaken for motion.
+	float cur_avg = 0.0;
+	float hist_avg = 0.0;
+	for (int j = -1; j <= 1; j++) {
+		for (int i = -1; i <= 1; i++) {
+			float2 o = float2(float(i), float(j)) * texel_size;
+			cur_avg  += luma(image.Sample(def_sampler, vert_in.uv + o).rgb);
+			hist_avg += luma(history.Sample(def_sampler, vert_in.uv + o).rgb);
+		}
+	}
+	cur_avg  /= 9.0;
+	hist_avg /= 9.0;
+
+	float diff   = abs(cur_avg - hist_avg);
+	float motion = smoothstep(motion_threshold * 0.5,
+				  motion_threshold * 1.5, diff);
+
+	// Local detail: high-frequency energy = center vs. local average.
+	float edge = abs(cur_yuv.x - cur_avg);
+
+	// detail_amount == 1 -> edges keep the current frame (no smoothing).
+	float detail_keep = 1.0 - detail_amount * sat(edge * 4.0);
+
+	// Scene-cut detection: drop history when the whole frame changed.
+	float scene = scene_stat.Sample(def_sampler, float2(0.5, 0.5)).r;
+	float keep_history = step(scene, scene_reset_threshold);
+
+	float w = strength * (1.0 - motion) * detail_keep *
+		  keep_history * history_valid;
+	// Chroma noise dominates in low light; smooth it a bit harder.
+	float w_chroma = sat(w * 1.25);
+
+	float3 out_yuv;
+	out_yuv.x = cur_yuv.x + (hist_yuv.x - cur_yuv.x) * w;
+	out_yuv.y = cur_yuv.y + (hist_yuv.y - cur_yuv.y) * w_chroma;
+	out_yuv.z = cur_yuv.z + (hist_yuv.z - cur_yuv.z) * w_chroma;
+
+	float3 rgb = yuv2rgb(out_yuv);
+	return float4(sat(rgb.x), sat(rgb.y), sat(rgb.z), cur.a);
+}
+
+float4 PSDraw(VertData vert_in) : TARGET
+{
+	return image.Sample(def_sampler, vert_in.uv);
+}
+
+technique SceneStat
+{
+	pass
+	{
+		vertex_shader = VSMain(vert_in);
+		pixel_shader  = PSSceneStat(vert_in);
+	}
+}
+
+technique Denoise
+{
+	pass
+	{
+		vertex_shader = VSMain(vert_in);
+		pixel_shader  = PSDenoise(vert_in);
+	}
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSMain(vert_in);
+		pixel_shader  = PSDraw(vert_in);
+	}
+}
